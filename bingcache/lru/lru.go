@@ -2,6 +2,7 @@ package lru
 
 import "container/list"
 
+// TODO: LRU-K, LFU, ARC
 // Cache Definition
 type Cache struct {
 	maxBytes int64
