@@ -9,6 +9,7 @@ import (
 // Hash函数
 type Hash func(data []byte) uint32
 
+// 一致性Hash算法的主数据结构
 type Map struct {
 	hash     Hash           //Hash函数
 	replicas int            //虚拟节点倍数
@@ -16,7 +17,6 @@ type Map struct {
 	hashMap  map[int]string //虚拟节点（用字符串经过hash之后得到的值）和真实节点（字符串）映射关系
 }
 
-// 一致性Hash算法的主数据结构
 func New(replicas int, fn Hash) *Map {
 	m := &Map{
 		replicas: replicas,

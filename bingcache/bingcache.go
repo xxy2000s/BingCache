@@ -25,6 +25,7 @@ type Group struct {
 	name      string //缓存名
 	getter    Getter //缓存未命中时获取源数据的回调(callback)
 	mainCache cache  //实现的并发缓存
+	peers     PeerPicker
 }
 
 var (
@@ -69,8 +70,33 @@ func (g *Group) Get(key string) (ByteView, error) {
 }
 
 // load函数，选择不同的加载数据源方式
-func (g *Group) load(key string) (ByteView, error) {
+func (g *Group) load(key string) (value ByteView, err error) {
+	if g.peers != nil {
+		if peer, ok := g.peers.PickPeer(key); ok {
+			if value, err = g.getFromPeer(peer, key); err == nil {
+				return value, nil
+			}
+			log.Println("[BingCache] Failed to get from peer", err)
+		}
+	}
 	return g.getLocally(key)
+}
+
+// 将实现了 PeerPicker 接口的 HTTPPool 注入Group
+func (g *Group) RegisterPeers(peers PeerPicker) {
+	if g.peers != nil {
+		panic("RegisterPeerPicker called more than once")
+	}
+	g.peers = peers
+}
+
+// 从远程节点加载源数据
+func (g *Group) getFromPeer(peer PeerGetter, key string) (ByteView, error) {
+	bytes, err := peer.Get(g.name, key)
+	if err != nil {
+		return ByteView{}, err
+	}
+	return ByteView{b: bytes}, nil
 }
 
 // 从本地加载源数据
