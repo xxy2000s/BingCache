@@ -3,6 +3,7 @@ package bingcache
 import (
 	"fmt"
 	"log"
+	"mycache/singleflight"
 	"sync"
 )
 
@@ -26,6 +27,7 @@ type Group struct {
 	getter    Getter //缓存未命中时获取源数据的回调(callback)
 	mainCache cache  //实现的并发缓存
 	peers     PeerPicker
+	loader    *singleflight.Group
 }
 
 var (
@@ -43,6 +45,7 @@ func NewGroup(name string, cacheBytes int64, getter Getter) *Group {
 		name:      name,
 		getter:    getter,
 		mainCache: cache{cacheBytes: cacheBytes},
+		loader:    &singleflight.Group{},
 	}
 	groups[name] = g
 	return g
@@ -71,15 +74,22 @@ func (g *Group) Get(key string) (ByteView, error) {
 
 // load函数，选择不同的加载数据源方式
 func (g *Group) load(key string) (value ByteView, err error) {
-	if g.peers != nil {
-		if peer, ok := g.peers.PickPeer(key); ok {
-			if value, err = g.getFromPeer(peer, key); err == nil {
-				return value, nil
+	// 外层包上 Do 函数，从而请求实现并发
+	viewi, err := g.loader.Do(key, func() (interface{}, error) {
+		if g.peers != nil {
+			if peer, ok := g.peers.PickPeer(key); ok {
+				if value, err = g.getFromPeer(peer, key); err == nil {
+					return value, nil
+				}
+				log.Println("[BingCache] Failed to get from peer", err)
 			}
-			log.Println("[BingCache] Failed to get from peer", err)
 		}
+		return g.getLocally(key)
+	})
+	if err == nil {
+		return viewi.(ByteView), nil
 	}
-	return g.getLocally(key)
+	return
 }
 
 // 将实现了 PeerPicker 接口的 HTTPPool 注入Group
