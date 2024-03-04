@@ -1,9 +1,9 @@
 package bingcache
 
 import (
+	"bingcache/singleflight"
 	"fmt"
 	"log"
-	"mycache/singleflight"
 	"sync"
 )
 
