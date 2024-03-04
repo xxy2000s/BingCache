@@ -1,18 +1,29 @@
 package bingcache
 
 import (
+	"bingcache/consistenthash"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
 )
 
-const defaultBasePath = "/_bingcache/"
+const (
+	defaultBasePath = "/_bingcache/"
+	defaultReplicas = 50
+)
 
+// HTTP Server: 构建连接池，并提供server端的服务
 // 实现PeerPicker for a pool of HTTP peers
 type HTTPPool struct {
-	self     string //记录自己的地址，主机名/IP和端口
-	basePath string //节点间通讯地址前缀
+	self        string                 //记录自己的地址，主机名/IP和端口
+	basePath    string                 //节点间通讯地址前缀
+	mu          sync.Mutex             // 保护peers和httpGetters不被修改
+	peers       *consistenthash.Map    // 使用一致性hash中的结构，通过具体的key选择节点
+	httpGetters map[string]*httpGetter // 记录远程http节点和请求 keyed by e.g. "http://10.0.0.2:8008"
 }
 
 func NewHTTPPool(self string) *HTTPPool {
@@ -60,3 +71,62 @@ func (p *HTTPPool) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Write(view.ByteSlice())
 
 }
+
+// HTTP Client: 定义每个客户端，并实现通过group和key获取缓存的Get功能，作为一种Peer Getter类型
+type httpGetter struct {
+	baseURL string
+}
+
+func (h *httpGetter) Get(group string, key string) ([]byte, error) {
+	// 获取URL
+	u := fmt.Sprintf(
+		"%v%v/%v",
+		h.baseURL,
+		url.QueryEscape(group),
+		url.QueryEscape(key),
+	)
+	res, err := http.Get(u)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+
+	// 验证状态码
+	if res.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("server returned: %v", res.Status)
+	}
+	// 拿数据
+	bytes, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("reading response body: %v", err)
+	}
+	return bytes, nil
+}
+
+// 验证 HttpGetter是否实现了 PeerGetter接口
+var _ PeerGetter = (*httpGetter)(nil)
+
+// 设置 peers节点
+func (p *HTTPPool) Set(peers ...string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.peers = consistenthash.New(defaultReplicas, nil)
+	p.peers.Add(peers...)
+	p.httpGetters = make(map[string]*httpGetter, len(peers))
+	for _, peer := range peers {
+		p.httpGetters[peer] = &httpGetter{baseURL: peer + p.basePath}
+	}
+}
+
+func (p *HTTPPool) PickPeer(key string) (PeerGetter, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if peer := p.peers.Get(key); peer != "" && peer != p.self {
+		p.Log("Pick peer: %s", peer)
+		return p.httpGetters[peer], true
+	}
+	return nil, false
+}
+
+var _ PeerPicker = (*HTTPPool)(nil)
